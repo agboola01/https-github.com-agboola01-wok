@@ -1,74 +1,129 @@
-from sentence_transformers import SentenceTransformer, util
-import pandas as pd
+import os
 import numpy as np
+from sentence_transformers import SentenceTransformer, util
 import streamlit as st
+from fpdf import FPDF
 from io import BytesIO
+from unidecode import unidecode
+import pdfplumber
+from docx import Document
 
-# Load the model
+# Load the SentenceTransformer model
 model = SentenceTransformer('paraphrase-MiniLM-L6-v2')
 
-# Load job descriptions database
-@st.cache
-def load_job_data(file_path):
-    return pd.read_csv(file_path)
+# Define heading keywords for extracting sections from CVs
+heading_keywords = { 
+    "Education": ["Education", "Degree", "University", "School"],
+    "Skills": ["Skills", "Skillset", "Technical Skills", "Core Competencies"],
+    "Experience/project": ["Experience", "Work Experience", "Professional Experience", "Projects", "Project", "Employment"],
+    "Certifications": ["Certifications", "Certification", "License"]
+}
 
-# Load CV database
-@st.cache
-def load_cv_data(file_path):
-    return pd.read_csv(file_path)
+# Function to extract text from a PDF file
+def extract_pdf_text(file_path):
+    content = ""
+    with pdfplumber.open(file_path) as pdf:
+        for page in pdf.pages:
+            page_text = page.extract_text() or ""
+            content += page_text
+    return content
 
-# Embed function for CVs and jobs
-def embed_text(data, columns):
-    texts = data[columns].apply(lambda x: ' '.join(x.dropna()), axis=1)
-    embeddings = model.encode(texts, convert_to_tensor=True)
-    return embeddings, data
+# Function to extract text from a Word file
+def extract_word_text(file_path):
+    doc = Document(file_path)
+    content = "\n".join([paragraph.text for paragraph in doc.paragraphs])
+    return content
 
-# Find the best matching CVs
-def find_best_matches(cv_embeddings, job_embedding, top_n=5):
-    similarities = util.pytorch_cos_sim(job_embedding, cv_embeddings)[0]
-    top_results = np.argpartition(-similarities, range(top_n))[:top_n]
-    return top_results, similarities
+# Function to extract specific sections from CV content
+def extract_sections(content):
+    sections = {key: "" for key in heading_keywords.keys()}
+    current_section = None
+    lines = content.split("\n")
+    
+    for line in lines:
+        line = line.strip()
+        if any(keyword.lower() in line.lower() for keyword in heading_keywords["Education"]):
+            current_section = "Education"
+        elif any(keyword.lower() in line.lower() for keyword in heading_keywords["Skills"]):
+            current_section = "Skills"
+        elif any(keyword.lower() in line.lower() for keyword in heading_keywords["Experience/project"]):
+            current_section = "Experience/project"
+        elif any(keyword.lower() in line.lower() for keyword in heading_keywords["Certifications"]):
+            current_section = "Certifications"
+        
+        if current_section:
+            sections[current_section] += line + "\n"
+    
+    return sections
+
+# Function to process CVs from the directory
+def process_cvs(directory):
+    cv_data = []
+    filenames = []
+    for filename in os.listdir(directory):
+        file_path = os.path.join(directory, filename)
+        if file_path.endswith(".pdf"):
+            content = extract_pdf_text(file_path)
+        elif file_path.endswith(".docx"):
+            content = extract_word_text(file_path)
+        else:
+            continue
+        
+        sections = extract_sections(content)
+        filenames.append(filename)
+        cv_data.append(sections)
+    return cv_data, filenames
+
+# Function to embed and compute cosine similarities between job description and CVs
+def compute_similarities(job_text, experience_texts):
+    job_embedding = model.encode(job_text, convert_to_tensor=True)
+    experience_embeddings = model.encode(experience_texts, convert_to_tensor=True)
+    similarities = util.pytorch_cos_sim(job_embedding, experience_embeddings)[0].cpu().numpy()
+    return similarities
 
 # Streamlit UI
 st.title("Job Description - CV Matching System")
 st.header("Match Job Descriptions to CVs")
 
-# Upload job description
+# Input for job description
 job_title = st.text_input("Position Title", placeholder="e.g., Data Scientist")
 company_name = st.text_input("Company Name", placeholder="e.g., TechCorp")
 job_description = st.text_area("Job Description", placeholder="Enter the job description here...")
 
+# Initialize the number of matches to display
+top_n = st.number_input("Number of Matches to Display", min_value=1, max_value=10, value=5, step=1)
+
 if job_description and st.button("Find Best Matches"):
-    # Combine the job details into a single string for embedding
+    # Combine job details into a single text
     job_text = f"{job_title} at {company_name}: {job_description}"
-    job_embedding = model.encode(job_text, convert_to_tensor=True)
-
-    # Load CV database and embed CVs
-    cv_data = load_cv_data('data/cv_database.csv')  # Path to your CV database
-    cv_embeddings, cv_data = embed_text(cv_data, ['education', 'skills', 'projects', 'certifications', 'experience'])
-
-    # Find top matches
-    top_n = st.number_input("Number of Matches to Display", min_value=1, max_value=10, value=5, step=1)
-    top_results, similarities = find_best_matches(cv_embeddings, job_embedding, top_n=top_n)
-
-    # Display top matches
-    st.subheader("Top Matching CVs")
-    for idx in top_results:
-        match_percentage = similarities[idx].item() * 100  # Convert similarity to percentage
+    
+    # Process CVs from the directory
+    cv_directory = "combined"  # Path where your CVs are stored
+    cv_data, filenames = process_cvs(cv_directory)
+    
+    # Extract the "Experience/Project" text from each CV
+    experience_texts = [cv['Experience/project'] for cv in cv_data]
+    
+    # Compute similarities between the job description and the "Experience/project" sections
+    similarities = compute_similarities(job_text, experience_texts)
+    
+    # Display results
+    top_indices = np.argsort(-similarities)[:top_n]  # Get top N indices
+    
+    st.subheader(f"Top {top_n} Matching CVs")
+    for idx in top_indices:
+        match_percentage = similarities[idx] * 100  # Convert similarity to percentage
         st.write(f"Match Score: {match_percentage:.2f}%")
-        st.write(cv_data.iloc[idx].to_dict())
-
-    # Allow downloading of matching CVs
-    st.subheader("Download Top Matching CVs")
-    for idx in top_results:
-        cv_content = cv_data.iloc[idx].to_dict()
-        cv_text = '\n'.join([f"{key}: {value}" for key, value in cv_content.items()])
-        cv_bytes = BytesIO()
-        cv_bytes.write(cv_text.encode())
-        cv_bytes.seek(0)
+        
+        # Display the "Experience/project" section from the CV
+        experience_content = cv_data[idx]["Experience/project"]
+        st.text_area(f"CV Content ({filenames[idx]})", experience_content, height=200)
+        
+        # Provide download option for the original CV
+        cv_file_path = os.path.join(cv_directory, filenames[idx])
         st.download_button(
-            label=f"Download CV {idx + 1}",
-            data=cv_bytes,
-            file_name=f"matching_cv_{idx + 1}.txt",
-            mime="text/plain"
+            label=f"Download Original {filenames[idx]}",
+            data=open(cv_file_path, "rb").read(),
+            file_name=filenames[idx],
+            mime="application/octet-stream"  # Generic file mime type
         )
