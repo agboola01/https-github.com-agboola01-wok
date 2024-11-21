@@ -10,6 +10,10 @@ from docx import Document
 # Load the SentenceTransformer model
 model = SentenceTransformer('paraphrase-MiniLM-L6-v2')
 
+# Ensure the "combine" folder exists for storing uploaded CVs
+COMBINE_FOLDER = "combine"
+os.makedirs(COMBINE_FOLDER, exist_ok=True)
+
 # Function to extract text from a PDF file
 def extract_pdf_text(file_path):
     content = ""
@@ -25,22 +29,23 @@ def extract_word_text(file_path):
     content = "\n".join([paragraph.text for paragraph in doc.paragraphs])
     return content
 
-# Function to process CV file and extract content
-def extract_cv_text(uploaded_file):
-    file_path = uploaded_file.name
+# Function to save and process uploaded CVs
+def save_and_extract_cv(uploaded_file):
+    # Save the file to the combine folder
+    file_path = os.path.join(COMBINE_FOLDER, uploaded_file.name)
+    with open(file_path, "wb") as f:
+        f.write(uploaded_file.getbuffer())
+
+    # Extract text based on file type
     if file_path.endswith(".pdf"):
-        with open(file_path, "wb") as f:
-            f.write(uploaded_file.getbuffer())
         content = extract_pdf_text(file_path)
     elif file_path.endswith(".docx"):
-        with open(file_path, "wb") as f:
-            f.write(uploaded_file.getbuffer())
         content = extract_word_text(file_path)
     else:
         st.error("Unsupported file format! Please upload a PDF or DOCX file.")
-        return None
-    os.remove(file_path)  # Clean up the temporary file
-    return content
+        return None, file_path
+    
+    return content, file_path
 
 # Function to process job descriptions from the jd folder
 def process_job_descriptions(folder="jd"):
@@ -72,10 +77,12 @@ uploaded_file = st.file_uploader("Upload Your CV (PDF or DOCX)", type=["pdf", "d
 top_n = st.number_input("Number of Matches to Display", min_value=1, max_value=10, value=5, step=1)
 
 if uploaded_file and st.button("Find Best Job Matches"):
-    # Extract text from the uploaded CV
-    cv_text = extract_cv_text(uploaded_file)
+    # Save and extract text from the uploaded CV
+    cv_text, saved_file_path = save_and_extract_cv(uploaded_file)
 
     if cv_text:
+        st.success(f"Your CV has been saved in the '{COMBINE_FOLDER}' folder as '{uploaded_file.name}'")
+        
         # Process job descriptions from the folder
         jd_folder = "jd"
         jd_texts, jd_filenames = process_job_descriptions(jd_folder)
