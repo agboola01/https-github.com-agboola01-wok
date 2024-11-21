@@ -7,6 +7,7 @@ from io import BytesIO
 from unidecode import unidecode
 import pdfplumber
 from docx import Document
+
 # Load the SentenceTransformer model
 model = SentenceTransformer('paraphrase-MiniLM-L6-v2')
 # Define heading keywords for extracting sections from CVs
@@ -24,11 +25,13 @@ def extract_pdf_text(file_path):
             page_text = page.extract_text() or ""
             content += page_text
     return content
+
 # Function to extract text from a Word file
 def extract_word_text(file_path):
     doc = Document(file_path)
     content = "\n".join([paragraph.text for paragraph in doc.paragraphs])
     return content
+
 # Function to extract specific sections from CV content
 def extract_sections(content):
     sections = {key: "" for key in heading_keywords.keys()}
